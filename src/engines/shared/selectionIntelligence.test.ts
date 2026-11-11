@@ -6,6 +6,10 @@ import type {
   SelectionCandidate,
 } from "../../types/sports";
 
+import type {
+  MarketQuote,
+} from "./marketQuotes";
+
 import {
   assessSelectionIntelligence,
 } from "./selectionIntelligence";
@@ -123,19 +127,136 @@ function createCandidate(
   };
 }
 
-test("approves a valid selection with conservative market value", () => {
+function createQuotePair(
+  candidate: SelectionCandidate,
+  options: {
+    referenceSelectedOdds?: number;
+    referenceOpposingOdds?: number;
+    bookmakerSelectedOdds?: number;
+    referenceAgeMs?: number;
+    bookmakerAgeMs?: number;
+  } = {},
+): {
+  reference: MarketQuote;
+  bookmaker: MarketQuote;
+} {
+  const now = Date.now();
+
+  const reference: MarketQuote = {
+    sourceId: "reference-source",
+    sourceName: "Independent Reference",
+    sourceRole: "reference",
+    fixtureId: candidate.fixture.id,
+    sport: candidate.fixture.sport,
+    marketType: candidate.market.type,
+    line: candidate.market.line,
+    capturedAt: new Date(
+      now - (options.referenceAgeMs ?? 30_000),
+    ).toISOString(),
+    status: "active",
+    outcomes: [
+      {
+        outcomeKey: "home-win",
+        name: "Home Win",
+        decimalOdds: options.referenceSelectedOdds ?? 2.5,
+        status: "active",
+      },
+      {
+        outcomeKey: "away-win",
+        name: "Away Win",
+        decimalOdds: options.referenceOpposingOdds ?? 1.5,
+        status: "active",
+      },
+    ],
+  };
+
+  const bookmaker: MarketQuote = {
+    sourceId: "bookmaker-source",
+    sourceName: "Test Bookmaker",
+    sourceRole: "bookmaker",
+    fixtureId: candidate.fixture.id,
+    sport: candidate.fixture.sport,
+    marketType: candidate.market.type,
+    line: candidate.market.line,
+    capturedAt: new Date(
+      now - (options.bookmakerAgeMs ?? 30_000),
+    ).toISOString(),
+    status: "active",
+    outcomes: [
+      {
+        outcomeKey: "home-win",
+        name: "Home Win",
+        decimalOdds:
+          options.bookmakerSelectedOdds ??
+          candidate.outcome.decimalOdds,
+        status: "active",
+      },
+      {
+        outcomeKey: "away-win",
+        name: "Away Win",
+        decimalOdds: candidate.market.outcomes[1].decimalOdds,
+        status: "active",
+      },
+    ],
+  };
+
+  return { reference, bookmaker };
+}
+
+function assess(
+  candidate: SelectionCandidate,
+  options: {
+    referenceSelectedOdds?: number;
+    referenceOpposingOdds?: number;
+    bookmakerSelectedOdds?: number;
+    referenceAgeMs?: number;
+    bookmakerAgeMs?: number;
+  } = {},
+  policy?: Parameters<typeof assessSelectionIntelligence>[4],
+) {
+  const quotes = createQuotePair(candidate, options);
+
+  return assessSelectionIntelligence(
+    candidate,
+    quotes.reference,
+    quotes.bookmaker,
+    "home-win",
+    policy,
+  );
+}
+
+test("approves a valid selection using independent reference and bookmaker quotes", () => {
   const candidate = createCandidate();
 
-  const result = assessSelectionIntelligence(
-    candidate,
-  );
+  const result = assess(candidate);
 
   assert.equal(result.decision, "approved");
   assert.equal(result.eligibleForTicket, true);
   assert.equal(result.validation.valid, true);
+  assert.equal(result.quoteValidation?.valid, true);
   assert.equal(result.value?.status, "value_candidate");
   assert.equal(result.risk?.decision, "approved");
+  assert.equal(result.value?.marketProbability, 0.375);
+  assert.ok(
+  Math.abs((result.value?.expectedValue ?? 0) - 0.30) < 1e-10,
+);
   assert.equal(result.rejectionReasons.length, 0);
+});
+
+test("uses bookmaker odds for expected value, not reference odds", () => {
+  const candidate = createCandidate({
+    selectedOdds: 2.4,
+  });
+
+  const result = assess(candidate);
+
+  assert.equal(result.decision, "approved");
+  assert.equal(result.value?.expectedValue, 0.56);
+  assert.ok(
+  Math.abs(
+    (result.value?.conservativeExpectedValue ?? 0) - 0.44,
+  ) < 1e-10,
+);
 });
 
 test("returns caution when meaningful risk warnings exist", () => {
@@ -148,9 +269,7 @@ test("returns caution when meaningful risk warnings exist", () => {
     sourceCount: 1,
   });
 
-  const result = assessSelectionIntelligence(
-    candidate,
-  );
+  const result = assess(candidate);
 
   assert.equal(result.decision, "caution");
   assert.equal(result.eligibleForTicket, false);
@@ -167,9 +286,7 @@ test("rejects a selection without sufficient conservative value", () => {
     lowerBound: 0.48,
   });
 
-  const result = assessSelectionIntelligence(
-    candidate,
-  );
+  const result = assess(candidate);
 
   assert.equal(result.decision, "rejected");
   assert.equal(result.eligibleForTicket, false);
@@ -185,9 +302,7 @@ test("rejects an invalid candidate", () => {
     "Candidate failed an upstream eligibility check.",
   ];
 
-  const result = assessSelectionIntelligence(
-    candidate,
-  );
+  const result = assess(candidate);
 
   assert.equal(result.decision, "rejected");
   assert.equal(result.eligibleForTicket, false);
@@ -195,22 +310,106 @@ test("rejects an invalid candidate", () => {
   assert.ok(result.rejectionReasons.length > 0);
 });
 
-test("returns unassessed for invalid value policy settings", () => {
+test("returns unassessed when the reference quote is stale", () => {
   const candidate = createCandidate();
+
+  const result = assess(candidate, {
+    referenceAgeMs: 6 * 60 * 1000,
+  });
+
+  assert.equal(result.decision, "unassessed");
+  assert.equal(result.eligibleForTicket, false);
+  assert.equal(result.quoteValidation?.valid, false);
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("stale"),
+    ),
+  );
+});
+
+test("returns unassessed when reference and bookmaker fixtures differ", () => {
+  const candidate = createCandidate();
+  const quotes = createQuotePair(candidate);
+
+  quotes.bookmaker.fixtureId = "another-fixture";
 
   const result = assessSelectionIntelligence(
     candidate,
-    {
-      riskPolicy: {
-        favouriteOddsCeiling: 1.70,
-        minimumQualityScore: 70,
-        minimumConfidence: 0.65,
-        minimumLowerProbability: 0.40,
-        maximumNegativeMarketGap: 0.05,
-      },
-      minimumProbabilityEdge: 1,
-    },
+    quotes.reference,
+    quotes.bookmaker,
+    "home-win",
   );
+
+  assert.equal(result.decision, "unassessed");
+  assert.equal(result.eligibleForTicket, false);
+  assert.equal(result.quoteValidation?.valid, false);
+});
+
+test("returns unassessed when quote market does not match candidate market", () => {
+  const candidate = createCandidate();
+  const quotes = createQuotePair(candidate);
+
+  quotes.reference.marketType = "over_under";
+
+  const result = assessSelectionIntelligence(
+    candidate,
+    quotes.reference,
+    quotes.bookmaker,
+    "home-win",
+  );
+
+  assert.equal(result.decision, "unassessed");
+  assert.equal(result.eligibleForTicket, false);
+});
+
+test("rejects when bookmaker odds differ from candidate odds", () => {
+  const candidate = createCandidate();
+
+  const result = assess(candidate, {
+    bookmakerSelectedOdds: 2.2,
+  });
+
+  assert.equal(result.decision, "rejected");
+  assert.equal(result.eligibleForTicket, false);
+  assert.ok(
+    result.rejectionReasons.some((reason) =>
+      reason.includes("bookmaker quote"),
+    ),
+  );
+});
+
+test("returns unassessed when selected outcome is not the candidate outcome", () => {
+  const candidate = createCandidate();
+
+  const quotes = createQuotePair(candidate);
+
+  const result = assessSelectionIntelligence(
+    candidate,
+    quotes.reference,
+    quotes.bookmaker,
+    "away-win",
+  );
+
+  assert.equal(result.decision, "unassessed");
+  assert.equal(result.eligibleForTicket, false);
+});
+
+test("returns unassessed for invalid value policy settings", () => {
+  const candidate = createCandidate();
+
+  const result = assess(candidate, {}, {
+    riskPolicy: {
+      favouriteOddsCeiling: 1.70,
+      minimumQualityScore: 70,
+      minimumConfidence: 0.65,
+      minimumLowerProbability: 0.40,
+      maximumNegativeMarketGap: 0.05,
+    },
+    minimumProbabilityEdge: 1,
+    quotePolicy: {
+      maximumAgeMs: 5 * 60 * 1000,
+    },
+  });
 
   assert.equal(result.decision, "unassessed");
   assert.equal(result.eligibleForTicket, false);

@@ -17,6 +17,13 @@ import {
   type RiskAssessment,
   type RiskPolicy,
 } from "./riskAssessment";
+import {
+  validateMarketQuotePair,
+  DEFAULT_MARKET_QUOTE_POLICY,
+  type MarketQuote,
+  type MarketQuotePairValidation,
+  type MarketQuotePolicy,
+} from "./marketQuotes";
 
 export type IntelligenceDecision =
   | "approved"
@@ -27,6 +34,7 @@ export type IntelligenceDecision =
 export interface SelectionIntelligencePolicy {
   riskPolicy: RiskPolicy;
   minimumProbabilityEdge: number;
+  quotePolicy: MarketQuotePolicy;
 }
 
 export interface SelectionIntelligenceResult {
@@ -39,6 +47,7 @@ export interface SelectionIntelligenceResult {
     issues: ValidationIssue[];
   };
 
+  quoteValidation: MarketQuotePairValidation | null;
   risk: RiskAssessment | null;
   value: MarketValueAssessment | null;
 
@@ -52,10 +61,18 @@ export const DEFAULT_INTELLIGENCE_POLICY:
   SelectionIntelligencePolicy = {
     riskPolicy: DEFAULT_RISK_POLICY,
     minimumProbabilityEdge: 0.02,
+    quotePolicy: DEFAULT_MARKET_QUOTE_POLICY,
   };
+
+function normalizeKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 export function assessSelectionIntelligence(
   candidate: SelectionCandidate,
+  referenceQuote: MarketQuote,
+  bookmakerQuote: MarketQuote,
+  selectedOutcomeKey: string,
   policy: SelectionIntelligencePolicy =
     DEFAULT_INTELLIGENCE_POLICY,
   now = Date.now(),
@@ -67,6 +84,8 @@ export function assessSelectionIntelligence(
     candidate,
     now,
   );
+
+  let quoteValidation: MarketQuotePairValidation | null = null;
 
   const result = (
     decision: IntelligenceDecision,
@@ -80,6 +99,7 @@ export function assessSelectionIntelligence(
       valid: validation.valid,
       issues: validation.issues,
     },
+    quoteValidation,
     risk,
     value,
     warnings: [...new Set(warnings)],
@@ -99,20 +119,81 @@ export function assessSelectionIntelligence(
     return result("rejected");
   }
 
+  // Validate the independent reference and bookmaker prices.
+  quoteValidation = validateMarketQuotePair(
+    referenceQuote,
+    bookmakerQuote,
+    selectedOutcomeKey,
+    now,
+    policy.quotePolicy,
+  );
+
+  if (!quoteValidation.valid) {
+    warnings.push(
+      ...quoteValidation.issues.map((issue) => issue.message),
+    );
+
+    return result("unassessed");
+  }
+
+  // Both quotes must describe the candidate's actual fixture and market.
+  const quotesMatchCandidate =
+    referenceQuote.fixtureId === candidate.fixture.id &&
+    bookmakerQuote.fixtureId === candidate.fixture.id &&
+    referenceQuote.sport === candidate.fixture.sport &&
+    bookmakerQuote.sport === candidate.fixture.sport &&
+    referenceQuote.marketType === candidate.market.type &&
+    bookmakerQuote.marketType === candidate.market.type &&
+    referenceQuote.line === candidate.market.line &&
+    bookmakerQuote.line === candidate.market.line;
+
+  if (!quotesMatchCandidate) {
+    warnings.push(
+      "Reference or bookmaker quote does not match the candidate fixture or market.",
+    );
+
+    return result("unassessed");
+  }
+
+  // The selected canonical outcome must identify the candidate outcome.
   if (
-    candidate.prediction.decimalOdds !==
-    candidate.outcome.decimalOdds
+    normalizeKey(selectedOutcomeKey) !==
+    normalizeKey(candidate.outcome.id)
+  ) {
+    warnings.push(
+      "Selected quote outcome does not match the candidate outcome.",
+    );
+
+    return result("unassessed");
+  }
+
+  const offeredDecimalOdds =
+    quoteValidation.offeredDecimalOdds;
+
+  if (offeredDecimalOdds === null) {
+    warnings.push(
+      "A valid bookmaker price could not be established.",
+    );
+
+    return result("unassessed");
+  }
+
+  // The candidate and prediction must reflect the actual bookmaker price.
+  if (
+    candidate.outcome.decimalOdds !== offeredDecimalOdds ||
+    candidate.prediction.decimalOdds !== offeredDecimalOdds
   ) {
     rejectionReasons.push(
-      "Prediction odds do not match the selected outcome odds.",
+      "Candidate or prediction odds do not match the validated bookmaker quote.",
     );
 
     return result("rejected");
   }
 
+  // Reference odds alone establish the consensus probability benchmark.
   const marketProbabilities = calculateMarketProbabilities(
-    candidate.market.outcomes.map((outcome) => ({
-      id: outcome.id,
+    referenceQuote.outcomes.map((outcome) => ({
+      id: outcome.outcomeKey,
       name: outcome.name,
       decimalOdds: outcome.decimalOdds,
     })),
@@ -121,22 +202,23 @@ export function assessSelectionIntelligence(
   if (!marketProbabilities.valid) {
     warnings.push(
       marketProbabilities.error ??
-      "Market probabilities could not be calculated.",
+      "Reference market probabilities could not be calculated.",
     );
 
     return result("unassessed");
   }
 
+  // Value uses the model's probability and the separate bookmaker price.
   const value = assessMarketValue({
     market: marketProbabilities,
-    outcomeId: candidate.outcome.id,
+    outcomeId: selectedOutcomeKey,
     modelProbability:
       candidate.prediction.estimatedProbability,
     lowerProbabilityBound:
       candidate.prediction.lowerProbabilityBound,
     upperProbabilityBound:
       candidate.prediction.upperProbabilityBound,
-    offeredDecimalOdds: candidate.outcome.decimalOdds,
+    offeredDecimalOdds,
     minimumProbabilityEdge:
       policy.minimumProbabilityEdge,
   });
@@ -149,7 +231,7 @@ export function assessSelectionIntelligence(
 
   const risk = assessSelectionRisk(
     candidate.prediction,
-    candidate.outcome.decimalOdds,
+    offeredDecimalOdds,
     policy.riskPolicy,
   );
 
@@ -168,7 +250,7 @@ export function assessSelectionIntelligence(
     return result("rejected", risk, value);
   }
 
-    const hasMaterialWarnings =
+  const hasMaterialWarnings =
     validation.issues.some(
       (issue) => issue.severity === "warning",
     ) ||
