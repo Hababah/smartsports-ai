@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "tsx --test src/tickets/duplicateChecker.test.ts src/tickets/ticketAllocator.test.ts src/engines/shared/ticketRiskAssessment.test.ts src/engines/shared/marketProbability.test.ts src/engines/shared/marketValue.test.ts"
+    "test": "tsx --test src/tickets/duplicateChecker.test.ts src/tickets/ticketAllocator.test.ts src/engines/shared/ticketRiskAssessment.test.ts src/engines/shared/marketProbability.test.ts src/engines/shared/marketValue.test.ts src/engines/shared/selectionIntelligence.test.ts"
   },
   "dependencies": {
     "react": "^19.3.1",
