@@ -176,7 +176,7 @@ export function assessSelectionIntelligence(
     value.warnings.some(
       (warning) =>
         !warning.includes(
-          "Market probabilities have been normalized",
+          "probabilities have been normalized",
         ),
     );
 

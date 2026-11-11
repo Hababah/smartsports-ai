@@ -25,6 +25,26 @@ describe("market value assessment", () => {
     assert.ok(result.conservativeProbabilityEdge >= 0.02);
   });
 
+  it("uses bookmaker offered odds independently of reference market odds", () => {
+    const result = assessMarketValue({
+      market,
+      outcomeId: "home",
+      modelProbability: 0.65,
+      lowerProbabilityBound: 0.60,
+      upperProbabilityBound: 0.70,
+      offeredDecimalOdds: 2.2,
+    });
+
+    assert.equal(result.status, "value_candidate");
+    assert.equal(result.marketProbability, 0.5);
+    assert.ok(
+  Math.abs(result.expectedValue - 0.43) < 0.000001,
+);
+    assert.ok(
+      Math.abs(result.conservativeExpectedValue - 0.32) < 0.000001,
+    );
+  });
+
   it("rejects a high-probability selection with negative conservative value", () => {
     const favouriteMarket = calculateMarketProbabilities([
       { id: "home", name: "Home", decimalOdds: 1.5 },
@@ -58,14 +78,14 @@ describe("market value assessment", () => {
     assert.equal(result.status, "no_value");
   });
 
-  it("rejects odds that do not match the market calculation", () => {
+  it("rejects invalid offered bookmaker odds", () => {
     const result = assessMarketValue({
       market,
       outcomeId: "home",
       modelProbability: 0.65,
       lowerProbabilityBound: 0.60,
       upperProbabilityBound: 0.70,
-      offeredDecimalOdds: 2.2,
+      offeredDecimalOdds: 1,
     });
 
     assert.equal(result.status, "unassessed");

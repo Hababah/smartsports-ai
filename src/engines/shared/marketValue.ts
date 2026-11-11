@@ -7,12 +7,18 @@ export type MarketValueStatus =
   | "unassessed";
 
 export interface MarketValueInput {
+  // Reference market used to estimate consensus probability.
   market: MarketProbabilityResult;
+
   outcomeId: string;
   modelProbability: number;
   lowerProbabilityBound: number;
   upperProbabilityBound: number;
+
+  // Actual bookmaker price being evaluated.
+  // This does not need to equal the reference market odds.
   offeredDecimalOdds: number;
+
   minimumProbabilityEdge?: number;
 }
 
@@ -91,17 +97,11 @@ export function assessMarketValue(
   );
 
   if (!outcome) {
-    return unassessed("Selected outcome was not found in the market.");
+    return unassessed("Selected outcome was not found in the reference market.");
   }
 
-  if (
-    Math.abs(outcome.decimalOdds - offeredDecimalOdds) > 0.000001
-  ) {
-    return unassessed(
-      "Offered odds do not match the odds used in the market calculation.",
-    );
-  }
-
+  // These probabilities come from the reference market,
+  // not necessarily from the bookmaker offering the selected price.
   const marketProbability = outcome.normalizedProbability;
   const rawImpliedProbability = outcome.rawImpliedProbability;
 
@@ -121,6 +121,7 @@ export function assessMarketValue(
   const conservativeProbabilityEdge =
     lowerProbabilityBound - marketProbability;
 
+  // Expected value uses the actual offered bookmaker odds.
   const expectedValue =
     modelProbability * offeredDecimalOdds - 1;
 
@@ -131,11 +132,11 @@ export function assessMarketValue(
 
   if (market.overround > 0) {
     warnings.push(
-      "Market probabilities have been normalized to account for bookmaker overround.",
+      "Reference market probabilities have been normalized to account for bookmaker overround.",
     );
   } else if (market.overround < 0) {
     warnings.push(
-      "This market has an underround. Verify the source and market completeness.",
+      "Reference market has an underround. Verify the source and market completeness.",
     );
   }
 
