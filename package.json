@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
-  },
+    "preview": "vite preview",
+    "test": "tsx --test src/tickets/duplicateChecker.test.ts src/tickets/ticketAllocator.test.ts src/engines/shared/ticketRiskAssessment.test.ts src/engines/shared/marketProbability.test.ts"
+},
   "dependencies": {
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
@@ -23,6 +24,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.13.0",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.1",
     "vite": "^8.3.6"
